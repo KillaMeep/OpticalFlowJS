@@ -1,33 +1,89 @@
-const App = () => {
-    return (
-        <div>
-            <h1>Optical Flow Visualization</h1>
-            <div id="video-container">
-                <video id="video" width="960" height="540" autoPlay muted></video>
-                <canvas id="canvas" width="960" height="540"></canvas>
-            </div>
-            <div id="instructions">
-                Allow camera access to see the optical flow in action!
-            </div>
-        </div>
-    );
-};
-
-ReactDOM.render(<App />, document.getElementById('root'));
-
 const videoElement = document.getElementById('video');
 const canvasElement = document.getElementById('canvas');
 const canvasCtx = canvasElement.getContext('2d');
 let prevGrayImageData;
 let lastFlow; // Variable to store the last processed flow
+let videoDevices = [];
+let selectedDevice = null;
 
-async function setupCamera() {
-    const stream = await navigator.mediaDevices.getUserMedia({
-        video: { width: 960, height: 540 }
+// Modal elements
+const cameraModal = document.getElementById('camera-modal');
+const closeModalButton = cameraModal.querySelector('.close');
+const cameraSelect = document.getElementById('camera-select');
+const startButton = document.getElementById('start-button');
+const selectCameraButton = document.getElementById('select-camera-btn');
+
+// Open camera selection modal
+selectCameraButton.addEventListener('click', async () => {
+    await requestCameraPermissions();
+    await getVideoDevices(); // Get the list of video devices
+    populateCameraSelect();
+    cameraModal.style.display = 'flex';
+});
+
+// Close modal
+closeModalButton.addEventListener('click', () => {
+    cameraModal.style.display = 'none';
+});
+
+// Populate camera select dropdown
+function populateCameraSelect() {
+    cameraSelect.innerHTML = '';
+    videoDevices.forEach(device => {
+        const option = document.createElement('option');
+        option.value = device.deviceId;
+        option.text = device.label || `Camera ${device.deviceId}`;
+        cameraSelect.appendChild(option);
     });
-    videoElement.srcObject = stream;
+    selectedDevice = cameraSelect.value; // Set the initial selected device
 }
 
+// Request camera permissions
+async function requestCameraPermissions() {
+    try {
+        await navigator.mediaDevices.getUserMedia({ video: true });
+    } catch (error) {
+        console.error("Camera permissions not granted.", error);
+        alert("Unable to access your camera. Please check your permissions.");
+    }
+}
+
+// Get video devices
+async function getVideoDevices() {
+    try {
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        videoDevices = devices.filter(device => device.kind === 'videoinput');
+        if (videoDevices.length === 0) {
+            alert("No cameras found.");
+        }
+    } catch (error) {
+        console.error("Error enumerating devices.", error);
+    }
+}
+
+// Start processing with the selected camera
+startButton.addEventListener('click', async () => {
+    selectedDevice = cameraSelect.value; // Update selected device
+    await setupCamera(selectedDevice);
+    cameraModal.style.display = 'none'; // Close the modal
+    videoElement.play();
+    main();
+});
+
+// Set up the camera with the selected device
+async function setupCamera(deviceId) {
+    try {
+        const stream = await navigator.mediaDevices.getUserMedia({
+            video: { deviceId: { exact: deviceId }, width: 960, height: 540 }
+        });
+        videoElement.srcObject = stream;
+    } catch (error) {
+        console.error("Error accessing the camera.", error);
+        alert("Unable to access the selected camera. Please select another one.");
+    }
+}
+
+// Convert frame to grayscale
 function toGrayScale(frame) {
     const gray = new ImageData(frame.width, frame.height);
     for (let i = 0; i < frame.data.length; i += 4) {
@@ -40,6 +96,7 @@ function toGrayScale(frame) {
     return gray;
 }
 
+// Calculate optical flow
 function calculateOpticalFlow(prevGray, currentGray) {
     const width = currentGray.width;
     const height = currentGray.height;
@@ -64,6 +121,7 @@ function calculateOpticalFlow(prevGray, currentGray) {
     return flow;
 }
 
+// Draw optical flow on canvas
 function drawOpticalFlow(flow, width, height) {
     const hsv = new Uint8ClampedArray(width * height * 4);
     for (let y = 0; y < height; y++) {
@@ -121,51 +179,26 @@ function drawOpticalFlow(flow, width, height) {
     canvasCtx.putImageData(imageData, 0, 0);
 }
 
+// Main processing function
 async function main() {
-    await setupCamera();
-    videoElement.play();
+    const processVideo = async () => {
+        canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+        canvasCtx.drawImage(videoElement, 0, 0, canvasElement.width, canvasElement.height);
+        const currentImageData = canvasCtx.getImageData(0, 0, canvasElement.width, canvasElement.height);
+        const currentGray = toGrayScale(currentImageData);
 
-    // Frame processing loop
-    videoElement.addEventListener('playing', () => {
-        const processFrame = () => {
-            const startTime = performance.now(); // Start time for processing
+        if (prevGrayImageData) {
+            lastFlow = calculateOpticalFlow(prevGrayImageData, currentGray);
+            drawOpticalFlow(lastFlow, canvasElement.width, canvasElement.height);
+        }
 
-            if (!videoElement.paused && !videoElement.ended) {
-                canvasCtx.drawImage(videoElement, 0, 0, canvasElement.width, canvasElement.height);
-                
-                const currentFrame = canvasCtx.getImageData(0, 0, canvasElement.width, canvasElement.height);
-                const currentGray = toGrayScale(currentFrame);
+        prevGrayImageData = currentGray;
 
-                if (prevGrayImageData) {
-                    const flow = calculateOpticalFlow(prevGrayImageData, currentGray);
-                    drawOpticalFlow(flow, canvasElement.width, canvasElement.height);
-                    lastFlow = flow; // Store last processed flow
-                } else {
-                    // Draw the last valid flow if it's not the first frame
-                    if (lastFlow) {
-                        drawOpticalFlow(lastFlow, canvasElement.width, canvasElement.height);
-                    }
-                }
+        requestAnimationFrame(processVideo);
+    };
 
-                prevGrayImageData = currentGray;
-
-                const endTime = performance.now(); // End time for processing
-                const processingTime = endTime - startTime;
-
-                // Display the last processed frame if processing takes too long
-                if (processingTime > 100) { // Threshold in milliseconds
-                    console.warn(`Frame processing took too long: ${processingTime} ms`);
-                    // If processing took too long, draw the last valid flow again
-                    if (lastFlow) {
-                        drawOpticalFlow(lastFlow, canvasElement.width, canvasElement.height);
-                    }
-                }
-
-                requestAnimationFrame(processFrame);
-            }
-        };
-        processFrame();
-    });
+    processVideo();
 }
 
-main();
+// Initialize camera modal functionality
+cameraModal.style.display = 'none'; // Hide modal on load
